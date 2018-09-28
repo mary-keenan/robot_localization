@@ -32,7 +32,7 @@ class ParticleFilter(object):
         self.occupancy_field = OccupancyField()
         self.transform_helper = TFHelper()
 
-    def update_initial_pose(self, msg):
+    def update_initial_pose(self, msg): 
         """ Callback function to handle re-initializing the particle filter
             based on a pose estimate.  These pose estimates could be generated
             by another ROS Node or could come from the rviz GUI """
