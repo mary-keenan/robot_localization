@@ -1,10 +1,8 @@
 #!/usr/bin/env python
 
-""" This is the starter code for the robot localization project """
-
 from __future__ import print_function, division
 import rospy
-from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, Pose2D
+from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, Pose2D, Pose, Point, Quaternion
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 import math
@@ -16,14 +14,17 @@ from occupancy_field import OccupancyField
 
 
 class ParticleFilter(object):
-	""" The class that represents a Particle Filter ROS Node
-	"""
-	def __init__(self):
-		rospy.init_node('pf')
-		r = rospy.Rate(5)
+	""" The class that represents a Particle Filter ROS Node """
 
+	def __init__(self):
+
+		# initialize topic listener, publisher, and other ROS-specific stuff
+		self.rate = rospy.Rate(5)
 		rospy.Subscriber("initialpose", PoseWithCovarianceStamped, self.update_initial_pose) # responds to selection of a new approximate robot location
-		self.particle_publisher = rospy.Publisher("particlecloud", PoseArray, queue_size=10) # for rviz
+		self.particle_publisher = rospy.Publisher("my_particlecloud", PoseArray, queue_size = 10) # for rviz
+		self.pose_array_msg = PoseArray()
+		self.pose_array_msg.header.frame_id = "odom"
+		self.pose_array_msg.header.stamp = rospy.Time.now()
 
 		# initialaize helper objects 
 		self.transform_helper = TFHelper()
@@ -33,7 +34,8 @@ class ParticleFilter(object):
 		self.sensor_model = SensorModel()
 
 		# initialize parameters
-		self.num_particles = 10
+		self.num_particles = 100
+		self.num_particles_to_resample_around = 10
 
 		# initialize variables
 		self.weighted_pose_array = []
@@ -47,29 +49,45 @@ class ParticleFilter(object):
 		for i in range(self.num_particles):
 			location = 	numpy.random.randint(low = -10, high = 11, size = 2) # low is inclusive, high is exclusive
 			theta = numpy.random.randint(low = 0, high = 360, size = 1)
-			point = WeightedPose(location[0], location[1], theta, weight)
-			rospy.loginfo(point)
+			point = WeightedPose(Pose2D(x = location[0], y = location[1], theta = theta), weight)
 			self.weighted_pose_array.append(point)
 
 
 	def subscribe_to_motor_model(self):
-		rospy.Subscriber("/robot_position", LaserScan, self.update_position)
+		""" starts subcribing to processed position topic with a callback for saving the data"""
+		rospy.Subscriber("robot_position", Pose2D, self.update_position)
 
 
 	def update_position(self, position):
+		""" stores the most recent processed position """
 		self.current_position = position
 
 
 	def resample_by_weights(self):
+		""" picks top self.num_particles_to_resample_around particles and allocates the remaining particles around them based on their weights """
 
-		pass
+		# filter out Nones and sort weights by descending order
+		filtered_weighted_pose_array = []
 
+		for weighted_pose in self.weighted_pose_array:
+			if not math.isnan(weighted_pose.weight):
+				filtered_weighted_pose_array.append(weighted_pose)
 
-	def redistribute_points(self):
-		""" based on movement + noise """
+		filtered_weighted_pose_array.sort(key = lambda x: x.weight, reverse = True)
 
+		# select top x particles to keep
+		particles_to_keep = filtered_weighted_pose_array[0:self.num_particles_to_resample_around]
 
-		pass
+		# clone the top particles based on their weight
+		sum_of_kept_weights = sum(particle.weight for particle in particles_to_keep)
+		self.weighted_pose_array = []
+
+		for particle in particles_to_keep:
+			# weights are by error, so a lower weight is actually better
+			num_particles_to_clone = int(self.num_particles - (particle.weight * self.num_particles) / sum_of_kept_weights)
+			particle_clone = WeightedPose(pose = particle.pose, weight = 1 / self.num_particles)
+			for n in range(num_particles_to_clone):
+				self.weighted_pose_array.append(particle_clone)
 
 
 	def update_initial_pose(self, msg): 
@@ -85,24 +103,32 @@ class ParticleFilter(object):
 		# initialize your particle filter based on the xy_theta tuple
 
 
-	def convert_weighted_poses_to_pose_array(self):
-		""" converts weighted poses to Pose[] for publishing the particle cloud """
+	def update_pose_array_msg(self):
+		""" converts weighted poses to PoseArray msg for publishing the particle cloud """
 		pose_array = []
 
 		for weighted_pose in self.weighted_pose_array:
-			pose_array.append(weighted_pose.pose)
+			point = Point(x = weighted_pose.pose.x, y = weighted_pose.pose.y)
+			quaternion = Quaternion(x = math.cos(weighted_pose.pose.theta[0]), y = math.sin(weighted_pose.pose.theta[0]))
+			pose = Pose(position = point, orientation = quaternion)
+			pose_array.append(pose)
 
-		return pose_array
+		self.pose_array_msg.poses = pose_array
 
 
 	def run(self):
-		""" """
-		while self.current_position is None:
-			r.sleep()
+		""" runs particle filter """
 
+		self.subscribe_to_motor_model()
+
+		# wait for first position data
+		while self.current_position is None and not rospy.is_shutdown():
+			self.rate.sleep()
+
+		# initialize with first position data
 		last_position = self.current_position
 
-		while not(rospy.is_shutdown()):
+		while not rospy.is_shutdown():
 
 			# get robot motion
 			movement = self.motor_model.calculate_movement(last_position, self.current_position)
@@ -115,25 +141,25 @@ class ParticleFilter(object):
 			self.weighted_pose_array = self.motor_model.update_particle_poses(self.weighted_pose_array, movement)
 			self.weighted_pose_array = self.sensor_model.update_particle_weights(self.weighted_pose_array)
 
-			# 
+			# publish particle cloud
+			self.update_pose_array_msg()
+			self.particle_publisher.publish(self.pose_array_msg)
 
- 
- 			self.particle_publisher.publish(self.convert_weighted_poses_to_pose_array())
+			# resample poses based on weights
+			self.resample_by_weights()
 
-			# in the main loop all we do is continuously broadcast the latest
-			# map to odom transform
+			# in the main loop all we do is continuously broadcast the latest map to odom transform
 			self.transform_helper.send_last_map_to_odom_transform()
-			r.sleep()
 
-
+			# pause before next iteration
+			self.rate.sleep()
 
 
 class SensorModel(object):
 
-	def __init__(object):
-		rospy.init_node('sm')
-		self.rate = rospy.Rate(100)
+	def __init__(self):
 
+		# initialize topic listenere
 		rospy.Subscriber("/stable_scan", LaserScan, self.store_data)
 
 		# initialaize helper objects 
@@ -148,35 +174,26 @@ class SensorModel(object):
 		self.sensor_data = data.ranges
 
 
-	def update_particle_weights(self, particle_poses):
-		""" normalizes the particle distance errors and uses the result as their weights, returns array of WeightedPoses """
-		particle_errors = self.get_all_particle_errors(particle_poses)
-		total_error = sum(particle_errors.values)
+	def update_particle_weights(self, weighted_poses):
+		""" returns total distance error as the new weight for all particles in WeightedPose[] """
 		weighted_pose_array = []
-
-		for particle_pose, error in particle_errors:
-			updated_weighted_pose = WeightedPose(pose = particle_pose, weight = error/total_error)
-			weighted_pose_array.append(updated_weighted_pose)
+		for weighted_pose in weighted_poses:
+			particle_error = self.get_specific_particle_distance_error(weighted_pose.pose)
+			weighted_pose_array.append(WeightedPose(pose = weighted_pose.pose, weight = particle_error))
 
 		return weighted_pose_array
-
-
-	def get_all_particle_errors(self, weighted_poses):
-		""" returns total distance error for all particles in array in dictionary[pose] = error """
-		particles_with_errors = dict() # we want to return a dictionary to make it easy to sum the dictionary values for normalization
-		for weighted_pose in weighted_poses:
-			particles_with_errors[weighted_pose.pose] = get_specific_particle_distance_error(weighted_pose.pose)
-
-		return particles_with_errors
 
 
 	def get_specific_particle_distance_error(self, pose): # TODO make this more robust
 		""" gets the total distance error for the sensor readings given some particle pose """
 
-		front_angle = self.sensor_data[0]
-		left_angle = self.sensor_data[90]
-		back_angle = self.sensor_data[180]
-		right_angle = self.sensor_data[270]
+		if self.sensor_data is None: # TODO check this later
+			return 0
+
+		front_angle = sum(self.sensor_data[0:10])/10
+		left_angle = sum(self.sensor_data[85:95])/10
+		back_angle = sum(self.sensor_data[175:185])/10
+		right_angle = sum(self.sensor_data[265:275])/10
 		total_error = 0
 
 		if front_angle is not 0.0:
@@ -208,9 +225,8 @@ class SensorModel(object):
 class MotorModel(object):
 
 	def __init__(self):
-		rospy.init_node('mm')
-		self.rate = rospy.Rate(100)
 
+		# initialize topic listeners and publisher
 		rospy.Subscriber("odom", Odometry, self.publish_position)
 		self.position_publisher = rospy.Publisher("robot_position", Pose2D, queue_size = 10)
 
@@ -257,7 +273,7 @@ class MotorModel(object):
 
 		for weighted_pose in weighted_pose_array:
 			updated_pose = self.add_noisy_movement_to_particle(weighted_pose.pose, movement)
-			updated_weighted_pose_array.append(Pose2D(pose = updated_pose, weight = weighted_pose.weight))
+			updated_weighted_pose_array.append(WeightedPose(pose = updated_pose, weight = weighted_pose.weight))
 
 		return updated_weighted_pose_array
 
@@ -278,19 +294,15 @@ class MotorModel(object):
 		return updated_pose
 
 
-	# def run(self):
-	# 	while not rospy.is_shutdown():
-	# 		self.rate.sleep()
-
-
 class WeightedPose(object):
 
-	def __init__(self, x, y, theta, weight):
-		self.pose = Pose2D(x = x, y = y, theta = theta)
+	def __init__(self, pose, weight):
+		self.pose = pose
 		self.weight = weight
 
 
 
 if __name__ == '__main__':
+	rospy.init_node('pf')
 	n = ParticleFilter()
 	n.run()
