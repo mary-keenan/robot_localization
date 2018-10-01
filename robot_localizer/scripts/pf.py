@@ -26,7 +26,6 @@ class ParticleFilter(object):
 		self.particle_publisher = rospy.Publisher("particlecloud", PoseArray, queue_size=10) # for rviz
 
 		# initialaize helper objects 
-		self.occupancy_field = OccupancyField()
 		self.transform_helper = TFHelper()
 
 		# initialize models
@@ -35,7 +34,6 @@ class ParticleFilter(object):
 
 		# initialize parameters
 		self.num_particles = 10
-
 
 		# initialize variables
 		self.weighted_pose_array = []
@@ -60,19 +58,6 @@ class ParticleFilter(object):
 
 	def update_position(self, position):
 		self.current_position = position
-
-
-	def subscribe_to_sensor_model(self):
-		rospy.Subscriber("/robot_scanner", Pose2D, self.update_sensor_data)
-
-
-	def update_sensor_data(self, sensor_data):
-		self.sensor_data = sensor_data
-
-
-	def update_particle_weights(self):
-		""" based on sensor data """
-		pass
 
 
 	def resample_by_weights(self):
@@ -100,25 +85,40 @@ class ParticleFilter(object):
 		# initialize your particle filter based on the xy_theta tuple
 
 
+	def convert_weighted_poses_to_pose_array(self):
+		""" converts weighted poses to Pose[] for publishing the particle cloud """
+		pose_array = []
+
+		for weighted_pose in self.weighted_pose_array:
+			pose_array.append(weighted_pose.pose)
+
+		return pose_array
+
+
 	def run(self):
 		""" """
-		while self.movement is None:
+		while self.current_position is None:
 			r.sleep()
 
 		last_position = self.current_position
 
 		while not(rospy.is_shutdown()):
+
+			# get robot motion
 			movement = self.motor_model.calculate_movement(last_position, self.current_position)
-			
-			# check if the movement was significant (all 0s if it wasn't) and skip this iteration if it wasn't
-			if movement.x == 0 and movement.y == 0 and movement.theta == 0:
+			if movement.x == 0 and movement.y == 0 and movement.theta == 0: # verify movement was significant
 				continue
 
-			last_position = self.current_position	
+			last_position = self.current_position # movement was significant, so update current position
 
+			# update particle poses and weights
+			self.weighted_pose_array = self.motor_model.update_particle_poses(self.weighted_pose_array, movement)
+			self.weighted_pose_array = self.sensor_model.update_particle_weights(self.weighted_pose_array)
 
+			# 
 
-			# SENSOR READING
+ 
+ 			self.particle_publisher.publish(self.convert_weighted_poses_to_pose_array())
 
 			# in the main loop all we do is continuously broadcast the latest
 			# map to odom transform
@@ -134,16 +134,75 @@ class SensorModel(object):
 		rospy.init_node('sm')
 		self.rate = rospy.Rate(100)
 
-		rospy.Subscriber("/stable_scan", LaserScan, self.publish_data)
-		self.sensor_publisher = rospy.Publisher("robot_scanner", LaserScan, queue_size = 10)
+		rospy.Subscriber("/stable_scan", LaserScan, self.store_data)
+
+		# initialaize helper objects 
+		self.occupancy_field = OccupancyField()
+
+		# initialize variables
+		self.sensor_data = None
 
 
+	def store_data(self, data):
+		""" stores list of most current sensor data """
+		self.sensor_data = data.ranges
 
-	def publish_data(self, data):
-		""" publishes 2D pose of current position """
+
+	def update_particle_weights(self, particle_poses):
+		""" normalizes the particle distance errors and uses the result as their weights, returns array of WeightedPoses """
+		particle_errors = self.get_all_particle_errors(particle_poses)
+		total_error = sum(particle_errors.values)
+		weighted_pose_array = []
+
+		for particle_pose, error in particle_errors:
+			updated_weighted_pose = WeightedPose(pose = particle_pose, weight = error/total_error)
+			weighted_pose_array.append(updated_weighted_pose)
+
+		return weighted_pose_array
 
 
+	def get_all_particle_errors(self, weighted_poses):
+		""" returns total distance error for all particles in array in dictionary[pose] = error """
+		particles_with_errors = dict() # we want to return a dictionary to make it easy to sum the dictionary values for normalization
+		for weighted_pose in weighted_poses:
+			particles_with_errors[weighted_pose.pose] = get_specific_particle_distance_error(weighted_pose.pose)
+
+		return particles_with_errors
+
+
+	def get_specific_particle_distance_error(self, pose): # TODO make this more robust
+		""" gets the total distance error for the sensor readings given some particle pose """
+
+		front_angle = self.sensor_data[0]
+		left_angle = self.sensor_data[90]
+		back_angle = self.sensor_data[180]
+		right_angle = self.sensor_data[270]
+		total_error = 0
+
+		if front_angle is not 0.0:
+			total_error += self.calculate_distance_error(pose, front_angle)
+		if left_angle is not 0.0:
+			total_error += self.calculate_distance_error(pose, left_angle)
+		if back_angle is not 0.0:
+			total_error += self.calculate_distance_error(pose, back_angle)
+		if right_angle is not 0.0:
+			total_error += self.calculate_distance_error(pose, right_angle)
+
+		return total_error
+
+
+	def calculate_distance_error(self, pose, sensor_dist):
+		""" calculates the x,y position of the point sensor_dist away from the pose """
 		
+		# calculate the new x and y coordinates
+		pose_angle_in_radians = math.radians(pose.theta)
+		new_x = pose.x + math.cos(pose_angle_in_radians) * sensor_dist
+		new_y = pose.y + math.sin(pose_angle_in_radians) * sensor_dist
+
+		# use the helper object to find how far the new x, y positions are from an object
+		# if this particle's pose is correct, the distance should be 0
+		dist_error = self.occupancy_field.get_closest_obstacle_distance(new_x, new_y)
+		return dist_error
 
 
 class MotorModel(object):
@@ -154,9 +213,6 @@ class MotorModel(object):
 
 		rospy.Subscriber("odom", Odometry, self.publish_position)
 		self.position_publisher = rospy.Publisher("robot_position", Pose2D, queue_size = 10)
-
-		# initialize variables
-		self.current_pose = None
 
 		# initialize parameters
 		self.linear_threshold_for_change = .2
@@ -182,10 +238,10 @@ class MotorModel(object):
 		""" calculates the change in location and angle between two poses and returns it if it's significant"""
 		
 		# calculate linear and angular change from last position
-		linear_x_change = current_pose.x - self.last_pose.x
-		linear_y_change = current_pose.y - self.last_pose.y
+		linear_x_change = current_pose.x - last_pose.x
+		linear_y_change = current_pose.y - last_pose.y
 		linear_total_change = math.sqrt(linear_x_change**2 + linear_y_change**2)
-		angular_change = abs(current_pose.theta - self.last_pose.theta)
+		angular_change = abs(current_pose.theta - last_pose.theta)
 
 		# check if movement has surpassed threshold
 		if linear_total_change >= self.linear_threshold_for_change or angular_change >= self.angular_threshold_for_change:
@@ -195,8 +251,19 @@ class MotorModel(object):
 		return Pose2D(x = 0, y = 0, theta = 0)
 
 
-	def add_noise(self, pose, movement):
-		""" calculates linear and angular noise from distribution and returns noisy pose """
+	def update_particle_poses(self, weighted_pose_array, movement):
+		""" updates particle positions given movement, adds random noise """
+		updated_weighted_pose_array = []
+
+		for weighted_pose in weighted_pose_array:
+			updated_pose = self.add_noisy_movement_to_particle(weighted_pose.pose, movement)
+			updated_weighted_pose_array.append(Pose2D(pose = updated_pose, weight = weighted_pose.weight))
+
+		return updated_weighted_pose_array
+
+
+	def add_noisy_movement_to_particle(self, pose, movement):
+		""" calculates linear and angular noise from distribution given some movement and returns pose updated with noisy movement """
 		center_of_dist = 0 # centered here because we want negative and positive values
 		normal_dist_samples  = numpy.random.normal(center_of_dist, self.standard_deviation_of_dist, 2)
 
@@ -205,7 +272,7 @@ class MotorModel(object):
 		linear_y_noise = normal_dist_samples[0] * movement.y**2 
 		angular_noise = normal_dist_samples[1] * movement.theta
 
-		# update input pose based on noise
+		# update input pose based on movement and noise
 		updated_pose = Pose2D(x = pose.x + linear_x_noise, y = pose.y + linear_y_noise, theta = pose.theta + angular_noise)
 		
 		return updated_pose
