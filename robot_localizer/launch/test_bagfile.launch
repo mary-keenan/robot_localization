@@ -20,8 +20,9 @@
  </group>
 
  <group unless="$(arg use_builtin)">
-  <node name="pf" pkg="robot_localizer" type="pf.py" output="screen">
+  <node name="pf" pkg="robot_localizer" type="pf.py" output="screen" launch-prefix="gnome-terminal --command">
     <remap from="scan" to="$(arg scan_topic)"/>
   </node>
+  <node name="motor_model" pkg="robot_localizer" type="motor_model.py"/>
 </group>
 </launch>
