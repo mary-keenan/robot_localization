@@ -1,0 +1,2 @@
+Header header
+WeightedPose[] poses
