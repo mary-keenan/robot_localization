@@ -21,9 +21,11 @@ class OccupancyField(object):
 
     def __init__(self):
         # grab the map from the map server
+        rospy.loginfo("Waiting for static map")
         rospy.wait_for_service("static_map")
         static_map = rospy.ServiceProxy("static_map", GetMap)
         self.map = static_map().map
+        rospy.loginfo("Got map!")
 
         # The coordinates of each grid cell in the map
         X = np.zeros((self.map.info.width*self.map.info.height, 2))
