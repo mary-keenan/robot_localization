@@ -1,2 +1,2 @@
 uint8 weight
-geometry_msgs/Pose pose
+geometry_msgs/PoseStamped pose
