@@ -40,27 +40,30 @@ class SensorModel():
         self.pc_scan = msg
 
 
-    def populate_error_poses(self, poses):
-        # Given pose array, returns weighted pose array based on average dist from
-        # pose scan data to map
+    def populate_error_poses(self, w_poses):
+        # Updates weighted pose array based on average dist from pose scan data
+        # to map
 
-        pose_errors = []
+        errors = [None] * len(w_poses.poses)
 
         # calculate error for each pose
-        for pose in poses:
-            pose_errors.append(self.get_average_distance(pose))
+        for i in range(0, len(w_poses.poses)):
+            errors[i] = (self.get_average_distance(w_poses.poses[i]))
 
         # normalize errors between 0 and 1, with large errors given low values
         max_error = max(errors)
-        for error in range(0, len(errors)):
-            errors[error] = 1 - errors[error]/max_error
 
-        return_posearray = []
+        for i in range(0, len(errors)):
+            if max_error == 0:
+                errors[i] = 1
+            else:
+                errors[i] = 1 - errors[i]/max_error
+
         # Add normalized errors to poses as weights
-        for pose in range(0,len(poses)):
-            pose.weight = errors[pose]
+        for i in range(0,len(w_poses.poses)):
+            w_poses.poses[i].weight = errors[i]
 
-        return poses
+        return w_poses
 
 
     def get_average_distance(self, pose):
@@ -69,16 +72,16 @@ class SensorModel():
         total_distance = 0
 
         # Translate scan to pose w/ respect to map
-        (trans,rot) = self.listener.lookupTransform('/base_link', '/map', rp.Time(0))
-        map_pose = self.transform_helper.convert_translation_rotation_to_pose(translation, rotation)
+        (translation,rotation) = self.listener.lookupTransform('/base_link', '/map', rp.Time(0))
+        map_pose = self.tf_helper.convert_translation_rotation_to_pose(translation, rotation)
 
-        scan_in_map = []
+        map_pose = self.transform_scan_to_pose(map_pose, self.pc_scan)
         # Check scan data avg dist to obstacle using OccupancyField
-        for point in scan_in_map:
+        for point in map_pose.points:
             total_distance += self.o_field.get_closest_obstacle_distance(point.x, point.y)
 
         # Return average distance
-        return total_distance/len(self.pc_scan)
+        return total_distance/len(self.pc_scan.ranges)
 
 
     def transform_scan_to_pose(self, pose, scan):

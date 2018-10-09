@@ -11,14 +11,18 @@
 from __future__ import print_function, division
 import rospy
 import numpy as np
-from std_msgs.msg import Header
-from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped, Pose, Pose2D, Vector3, Point
+from copy import deepcopy
+
 from helper_functions import TFHelper
 from occupancy_field import OccupancyField
 from sensor_model import SensorModel
+
+from tf import TransformListener
+
+from std_msgs.msg import Header
+from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped, Pose, Pose2D, Vector3, Point
 from robot_localizer.msg import WeightedPose, WeightedPoseArray
 from tf.transformations import quaternion_from_euler
-from tf import TransformListener
 
 
 class ParticleFilter(object):
@@ -52,7 +56,8 @@ class ParticleFilter(object):
         self.sensor_model = SensorModel(self.occupancy_field, self.transform_helper)
 
         self.particles = WeightedPoseArray(header=Header())
-        self.particle_num = 3
+        self.particle_num = 50
+        self.particle_cull_fraction = 0.9   # Percentage of particles to keep
         self.loopcounter = 0
 
 
@@ -72,20 +77,21 @@ class ParticleFilter(object):
             self.transform_helper.send_last_map_to_odom_transform()
 
         except AttributeError:
-            rospy.logwarn("Error: No static map provided")
+            rospy.logwarn("ERR: No static map provided")
             return
 
+        rospy.Rate(2).sleep()
         # initialize your particle filter based on the xy_theta tuple
         particles = [None] * self.particle_num
 
         # creates initial random distribution of poses
         for particle in range(0,self.particle_num):
-            pose = WeightedPose(weight=0.5, pose=PoseStamped(header=Header(frame_id='odom')))
-            pose.pose.pose.position.x = np.random.normal(msg.pose.pose.position.x, 0.3)
-            pose.pose.pose.position.y = np.random.normal(msg.pose.pose.position.y, 0.3)
-            pose.pose.pose.position.z = 0
-            pose.pose.pose.orientation = msg.pose.pose.orientation
-            particles[particle] = self.transform_listener.transformPose('map', pose.pose)
+            pose = PoseStamped(header=Header(frame_id='odom'))
+            pose.pose.position.x = np.random.normal(msg.pose.pose.position.x, 0.3)
+            pose.pose.position.y = np.random.normal(msg.pose.pose.position.y, 0.3)
+            pose.pose.position.z = 0
+            pose.pose.orientation = msg.pose.pose.orientation
+            particles[particle] = WeightedPose(weight=1, pose=self.transform_listener.transformPose('map', pose))
 
 
         rospy.loginfo("Generated new batch of particles")
@@ -96,8 +102,8 @@ class ParticleFilter(object):
     def update_particle_display(self):
 
         if len(self.particles.poses) > 0:
-            particles = [p.pose for p in self.particles.poses]
-            self.particle_pub.publish(header=Header(frame_id='map'), poses=particles)
+            particles = [p.pose.pose for p in self.particles.poses]
+            self.particle_pub.publish(PoseArray(header=Header(frame_id='map'), poses=particles))
         else:
             rospy.logwarn("Error: no particles to display")
 
@@ -109,7 +115,7 @@ class ParticleFilter(object):
         for particle in self.particles.poses:
 
             # Get current pose
-            x_prev, y_prev, theta_prev = self.transform_helper.convert_pose_to_xy_and_theta(particle.pose)
+            x_prev, y_prev, theta_prev = self.transform_helper.convert_pose_to_xy_and_theta(particle.pose.pose)
 
             # Add noise to increments
             x_prev += np.random.normal(trans_vals[0], trans_vals[1])
@@ -119,7 +125,7 @@ class ParticleFilter(object):
             # Apply increments
             translation = (x_prev + (np.sqrt(x**2+y**2)*np.cos(theta_prev)), y_prev + (np.sqrt(x**2+y**2)*np.sin(theta_prev)), 0)
             rotation = quaternion_from_euler(0,0, theta_prev + theta)
-            particle.pose = self.transform_helper.convert_translation_rotation_to_pose(translation, rotation)
+            particle.pose = PoseStamped(header=Header(frame_id='map'), pose=self.transform_helper.convert_translation_rotation_to_pose(translation, rotation))
 
         self.update_particle_display()
 
@@ -132,20 +138,44 @@ class ParticleFilter(object):
         for particle in self.particles.poses:
 
 
-            pose_info = self.transform_helper.convert_pose_to_xy_and_theta(particle.pose)
+            pose_info = self.transform_helper.convert_pose_to_xy_and_theta(particle.pose.pose)
             position = (position[0] + pose_info[0], position[1] + pose_info[1])
             orientation_point  = (orientation_point[0] + np.cos(pose_info[2]), orientation_point[1] + np.sin(pose_info[2]))
 
         position = (position[0]/len(self.particles.poses), position[1]/len(self.particles.poses))
         orientation_point = (orientation_point[0]/len(self.particles.poses), orientation_point[1]/len(self.particles.poses))
         orientation = np.arctan2(orientation_point[1], orientation_point[0])
-        print(orientation)
         pose = self.transform_helper.convert_translation_rotation_to_pose(translation=(position[0], position[1], 0),
                                                                           rotation = quaternion_from_euler(0, 0, orientation))
 
-        #self.transform_helper.fix_map_to_odom_transform(pose, rospy.Time())
+        self.transform_helper.fix_map_to_odom_transform(pose, rospy.Time())
         self.pose_estimate_pub.publish(PoseStamped(header=Header(frame_id='map',stamp=rospy.Time()),pose=pose))
         return pose
+
+
+    def generate_new_particles_2(self, old_particles, percentage_to_keep):
+        # Return a new set of particles based on particle weights
+
+        # Chose top percent of pose list as sorted by weight
+        weights = [pose.weight for pose in old_particles.poses]
+        chosen_particles = [pose for _,pose in sorted(zip(weights, old_particles.poses))[0:int(percentage_to_keep*len(old_particles.poses))]]
+
+        # Sample from chosen particles using normalized weights for probabilities
+        chosen_weights = [pose.weight for pose in chosen_particles]
+        normalized_weights = [float(i)/sum(chosen_weights) for i in chosen_weights]
+        weighted_particle_sample = np.random.choice(len(chosen_particles), len(old_particles.poses), normalized_weights)
+        new_particles = [deepcopy(chosen_particles[index]) for index in weighted_particle_sample]
+
+        return WeightedPoseArray(header=Header(frame_id='map'), poses=new_particles)
+
+
+    def generate_new_particles_1(self, old_particles, percentage_to_keep):
+        # Return a new set of particles based on particle weights
+
+        weight_array = [pose.weight for pose in old_particles.poses]
+        particle_num_to_keep = int(len(old_particles.poses) * percentage_to_keep)
+        particle_choices = np.random.choice(old_particles.poses, particle_num_to_keep, p=weight_array)
+        print(WeightedPoseArray(Header(), particle_choices))
 
 
     def pf_loop(self, msg):
@@ -153,17 +183,10 @@ class ParticleFilter(object):
         rospy.loginfo("Sensor loop " + str(self.loopcounter))
 
         # update weights based on sensor model
-        # self.sensor_model.populate_error_poses(self.particles.poses)
-
-
-        # TODO: take weighted avg of particles; best guess position
-
-        # Updates laser scan visualization
-        pointcloud = self.sensor_model.transform_scan_to_pose(self.particles.poses[0].pose, self.sensor_model.pc_scan)
-        self.sensor_model.visualize_transformed_scan(pointcloud)
+        self.sensor_model.populate_error_poses(self.particles)
 
         # Resample particles based on weights
-
+        self.particles = self.generate_new_particles_2(self.particles, 0.9)
 
         # Propagate particles based on motor model
         self.propagate_particles(msg.x, msg.y, msg.theta)
