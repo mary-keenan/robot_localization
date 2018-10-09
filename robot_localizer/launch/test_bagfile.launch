@@ -5,6 +5,7 @@
   <arg name="scan_topic" default="stable_scan"/>
   <arg name="map_name"/>
 
+  <node type="rviz" name="rviz" pkg="rviz" args="-d $(find robot_localizer)/rviz/visualize.rviz" />
   <node name="map_server" pkg="map_server" type="map_server" args="$(find robot_localizer)/maps/$(arg map_name).yaml"/>
   <node name="bag_player" pkg="rosbag" type="play" args="$(find robot_localizer)/bags/$(arg map_name).bag --clock --pause" output="screen"/>
 
