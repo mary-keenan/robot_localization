@@ -6,14 +6,12 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, Pose2D, Pose
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 import math
-from tf.transformations import euler_from_quaternion, rotation_matrix, quaternion_from_matrix
+from tf.transformations import euler_from_quaternion, rotation_matrix, quaternion_from_matrix, quaternion_from_euler
 import numpy
 
 from helper_functions import TFHelper
 from occupancy_field import OccupancyField
 
-
-# TODO -- should I try to do something that forces the arrows to stay in the map?
 
 class ParticleFilter(object):
 	""" The class that represents a Particle Filter ROS Node """
@@ -32,14 +30,15 @@ class ParticleFilter(object):
 		self.transform_helper = TFHelper()
 
 		# initialize parameters
-		self.num_particles = 10
-		self.num_particles_to_resample_around = 3
-		self.standard_deviation_of_dist = .5
-		self.linear_threshold_for_change = .2
-		self.angular_threshold_for_change = 10 # in degrees
+		self.num_particles = 50
+		self.num_particles_to_resample_around = 5
+		self.standard_deviation_of_dist = 1
+		self.linear_threshold_for_change = .01
+		self.angular_threshold_for_change = math.radians(1)
+		self.amplifier = .75
 
 		# initialize models
-		self.motor_model = MotorModel(self.standard_deviation_of_dist, self.linear_threshold_for_change, self.angular_threshold_for_change)
+		self.motor_model = MotorModel(self.standard_deviation_of_dist, self.linear_threshold_for_change, self.angular_threshold_for_change, self.amplifier)
 		self.sensor_model = SensorModel()
 
 		# initialize variables
@@ -63,15 +62,17 @@ class ParticleFilter(object):
 		# filter out Nones and sort weights by descending order
 		filtered_weighted_pose_array = []
 
+		print ("resampling")
 		for weighted_pose in self.weighted_pose_array:
 			if not math.isnan(weighted_pose.weight):
 				filtered_weighted_pose_array.append(weighted_pose)
+				print ("x",weighted_pose.pose.x, "y",weighted_pose.pose.y, "theta",math.degrees(weighted_pose.pose.theta), "weight",weighted_pose.weight)
 
 		# if all of the weights are NaN, then keep our last list
 		if len(filtered_weighted_pose_array) is 0:
 			return
 
-		filtered_weighted_pose_array.sort(key = lambda x: x.weight, reverse = True)
+		filtered_weighted_pose_array.sort(key = lambda x: x.weight, reverse = False)
 
 		# select top x particles to keep
 		particles_to_keep = filtered_weighted_pose_array
@@ -88,6 +89,7 @@ class ParticleFilter(object):
 			num_particles_to_clone = int(round(particle.weight * self.num_particles))
 			particle_clone = WeightedPose(pose = particle.pose, weight = 1 / self.num_particles)
 			for n in range(num_particles_to_clone):
+				print ("keep x",particle.pose.x, "y",particle.pose.y, "theta",math.degrees(particle.pose.theta), "weight",particle.weight)
 				self.weighted_pose_array.append(particle_clone)
 
 
@@ -103,9 +105,9 @@ class ParticleFilter(object):
 		# initialize your particle filter based on the xy_theta tuple
 		weight = 1.0 / self.num_particles # all points have the same weight to start
 		for i in range(self.num_particles):
-			particle_x = numpy.random.normal(loc = x, scale = self.standard_deviation_of_dist, size = 1) # low is inclusive, high is exclusive
-			particle_y = numpy.random.normal(loc = y, scale = self.standard_deviation_of_dist, size = 1)
-			particle_theta = numpy.random.normal(loc = theta, scale = self.standard_deviation_of_dist, size = 1)
+			particle_x = x#numpy.random.normal(loc = x, scale = self.standard_deviation_of_dist, size = 1) # low is inclusive, high is exclusive
+			particle_y = y#numpy.random.normal(loc = y, scale = self.standard_deviation_of_dist, size = 1)
+			particle_theta = theta#numpy.random.normal(loc = theta, scale = self.standard_deviation_of_dist, size = 1)
 			point = WeightedPose(Pose2D(x = particle_x, y = particle_y, theta = particle_theta), weight)
 			self.weighted_pose_array.append(point)
 
@@ -116,11 +118,37 @@ class ParticleFilter(object):
 
 		for weighted_pose in self.weighted_pose_array:
 			point = Point(x = weighted_pose.pose.x, y = weighted_pose.pose.y)
-			quaternion = Quaternion(x = math.cos(weighted_pose.pose.theta), y = math.sin(weighted_pose.pose.theta))
+			quaternion = Quaternion(*quaternion_from_euler(0, 0, weighted_pose.pose.theta))
 			pose = Pose(position = point, orientation = quaternion)
+			#self.pose_array_msg.poses.append(pose)
 			pose_array.append(pose)
-
+		
 		self.pose_array_msg.poses = pose_array
+
+
+	def calculate_position(self):
+		""" finds the average pose from the resampled points """
+
+		x_sum = 0
+		y_sum = 0
+		theta_sum = 0
+
+		for pose in self.weighted_pose_array:
+			x_sum += pose.pose.x
+			y_sum += pose.pose.y
+			theta_sum += pose.pose.theta
+			print (pose.pose.theta)
+
+		x_avg = x_sum / self.num_particles
+		y_avg = y_sum / self.num_particles
+		theta_avg = theta_sum / self.num_particles
+
+		# conert it to Pose form for the transform_helper function
+		point = Point(x = x_avg, y = y_avg)
+		quaternion = Quaternion(*quaternion_from_euler(0, 0, theta_avg))
+		pose = Pose(position = point, orientation = quaternion)
+
+		return pose
 
 
 	def run(self):
@@ -134,6 +162,10 @@ class ParticleFilter(object):
 
 		# initialize with first position data
 		last_position = self.current_position
+
+		# publish first point
+		self.update_pose_array_msg()
+		self.particle_publisher.publish(self.pose_array_msg)
 
 		while not rospy.is_shutdown():
 
@@ -156,6 +188,8 @@ class ParticleFilter(object):
 			self.resample_by_weights()
 
 			# in the main loop all we do is continuously broadcast the latest map to odom transform
+			avg_pose = self.calculate_position()
+			self.transform_helper.fix_map_to_odom_transform(avg_pose, timestamp = rospy.Time.now())
 			self.transform_helper.send_last_map_to_odom_transform()
 
 			# pause before next iteration
@@ -168,6 +202,14 @@ class SensorModel(object):
 
 		# initialize topic listenere
 		rospy.Subscriber("/stable_scan", LaserScan, self.store_data)
+		self.particle_publisher = rospy.Publisher("rel_laser", PoseArray, queue_size = 10) # for rviz
+		self.pose_array_msg = PoseArray()
+		self.pose_array_msg.header.frame_id = "map"
+		self.pose_array_msg.header.stamp = rospy.Time.now()
+		self.error_pub = rospy.Publisher("errors", PoseArray, queue_size = 10) # for rviz
+		self.error_pose_array_msg = PoseArray()
+		self.error_pose_array_msg.header.frame_id = "map"
+		self.error_pose_array_msg.header.stamp = rospy.Time.now()
 
 		# initialaize helper objects 
 		self.occupancy_field = OccupancyField()
@@ -198,12 +240,19 @@ class SensorModel(object):
 			return 0
 
 		# for the angles with distance data (0.0 means no reading), calculate the distance of the pose
+		self.pose_array_msg.poses = []
+		self.error_pose_array_msg.poses = []
+		
 		total_error = 0
+		# get error dist
 		for degree in range(len(self.sensor_data)):
 			distance = self.sensor_data[degree]
-			if distance is not 0.0:
+			if distance > 0:
 				total_error += self.calculate_distance_error(pose, degree, distance)
 
+		self.particle_publisher.publish(self.pose_array_msg)
+		self.error_pub.publish(self.error_pose_array_msg)
+		
 		return total_error
 
 
@@ -212,19 +261,33 @@ class SensorModel(object):
 		point sensor_degree angle, sensor_dist away from the pose """
 		
 		# calculate the new x and y coordinates
-		angle_in_radians = math.radians(pose.theta + sensor_degree)
+		angle_in_radians = pose.theta + math.radians(sensor_degree)
 		new_x = pose.x + math.cos(angle_in_radians) * sensor_dist
 		new_y = pose.y + math.sin(angle_in_radians) * sensor_dist
 
+		# plot the location of the particle's sensor reading
+		point = Point(x = new_x, y = new_y)
+		quaternion = Quaternion(*quaternion_from_euler(0, 0, angle_in_radians))
+		pose = Pose(position = point, orientation = quaternion)
+		self.pose_array_msg.poses.append(pose)
+		
 		# use the helper object to find how far the new x, y positions are from an object
 		# if this particle's pose is correct, the distance should be 0
 		dist_error = self.occupancy_field.get_closest_obstacle_distance(new_x, new_y)
+
+		# plot distance error on top of the location of the particle's sensor reading
+		if dist_error is not None:
+			point = Point(x = new_x + math.cos(angle_in_radians) * dist_error, y = new_y + math.sin(angle_in_radians) * dist_error)
+			quaternion = Quaternion(*quaternion_from_euler(0, 0, angle_in_radians))
+			pose = Pose(position = point, orientation = quaternion)
+			self.error_pose_array_msg.poses.append(pose)
+		
 		return dist_error
 
 
 class MotorModel(object):
 
-	def __init__(self, standard_deviation_of_dist = .25, linear_threshold_for_change = .01, angular_threshold_for_change = 1):
+	def __init__(self, standard_deviation_of_dist = .25, linear_threshold_for_change = .01, angular_threshold_for_change = 1, amplifier = 3):
 
 		# initialize topic listeners and publisher
 		rospy.Subscriber("odom", Odometry, self.publish_position)
@@ -234,7 +297,7 @@ class MotorModel(object):
 		self.linear_threshold_for_change = linear_threshold_for_change
 		self.angular_threshold_for_change = angular_threshold_for_change
 		self.standard_deviation_of_dist = standard_deviation_of_dist # determines magnitude of noise
-
+		self.amplifier = amplifier # speed up movements
 
 	def publish_position(self, odom):
 		""" publishes 2D pose of current position """
@@ -246,7 +309,7 @@ class MotorModel(object):
 							 pose.orientation.z,
 							 pose.orientation.w)
 		angles = euler_from_quaternion(orientation_tuple)
-		current_pose = Pose2D(x = pose.position.x, y = pose.position.y, theta = math.degrees(angles[2]))
+		current_pose = Pose2D(x = pose.position.x, y = pose.position.y, theta = angles[2])
 		self.position_publisher.publish(current_pose)
 
 
@@ -257,10 +320,10 @@ class MotorModel(object):
 		linear_x_change = current_pose.x - last_pose.x
 		linear_y_change = current_pose.y - last_pose.y
 		linear_total_change = math.sqrt(linear_x_change**2 + linear_y_change**2)
-		angular_change = abs(current_pose.theta - last_pose.theta)
+		angular_change = current_pose.theta - last_pose.theta
 
 		# check if movement has surpassed threshold
-		if linear_total_change >= self.linear_threshold_for_change or angular_change >= self.angular_threshold_for_change:
+		if linear_total_change >= self.linear_threshold_for_change or abs(angular_change) >= self.angular_threshold_for_change:
 			movement = Pose2D(x = linear_x_change, y = linear_y_change, theta = angular_change)
 			return movement
 
@@ -270,6 +333,7 @@ class MotorModel(object):
 	def update_particle_poses(self, weighted_pose_array, movement):
 		""" updates particle positions given movement, adds random noise """
 		updated_weighted_pose_array = []
+		pose_array = []
 
 		for weighted_pose in weighted_pose_array:
 			updated_pose = self.add_noisy_movement_to_particle(weighted_pose.pose, movement)
@@ -281,20 +345,16 @@ class MotorModel(object):
 	def add_noisy_movement_to_particle(self, pose, movement):
 		""" calculates linear and angular noise from distribution given some movement and returns pose updated with noisy movement """
 		center_of_dist = 0 # centered here because we want negative and positive values
-		position_normal_dist_samples  = numpy.random.normal(loc = center_of_dist, scale = self.standard_deviation_of_dist, size = 3)
-		theta_normal_dist_samples  = numpy.random.normal(loc = center_of_dist, scale = self.standard_deviation_of_dist/10, size = 3)
+		position_normal_dist_samples  = numpy.random.normal(loc = center_of_dist, scale = self.standard_deviation_of_dist, size = 2)
+		theta_normal_dist_sample  = numpy.random.normal(loc = center_of_dist, scale = self.standard_deviation_of_dist, size = 1)
 
 		# calculate noise that is proportional to the magnitude of the movement
-		linear_x_noise = position_normal_dist_samples[0] * movement.x
-		linear_y_noise = position_normal_dist_samples[1] * movement.y
-		angular_noise = theta_normal_dist_samples[2] * movement.theta
+		magnitude_of_movement = math.sqrt(movement.x**2 + movement.y**2)
+		rotation = pose.theta + movement.theta * (1 + theta_normal_dist_sample[0]) * 2
+		x_translation = pose.x + magnitude_of_movement * math.cos(pose.theta) * (1 + position_normal_dist_samples[0]) * self.amplifier
+		y_translation = pose.y + magnitude_of_movement * math.sin(pose.theta) * (1 + position_normal_dist_samples[1]) * self.amplifier
 
-		# print ("linear: %d and angular: %d" % (movement.x, movement.theta))
-
-		# update input pose based on movement and noise
-		updated_pose = Pose2D(x = pose.x + linear_x_noise, y = pose.y + linear_y_noise, theta = pose.theta + angular_noise)
-		
-		return updated_pose
+		return Pose2D(x = x_translation, y = y_translation, theta = rotation)
 
 
 class WeightedPose(object):

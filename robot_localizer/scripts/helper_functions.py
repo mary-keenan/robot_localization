@@ -88,6 +88,8 @@ class TFHelper(object):
             the localizer """
         (translation, rotation) = \
             self.convert_pose_inverse_transform(robot_pose)
+        # print ("translation:", translation,"rotation:", rotation)
+
         p = PoseStamped(
             pose=self.convert_translation_rotation_to_pose(translation,
                                                            rotation),
@@ -103,6 +105,7 @@ class TFHelper(object):
     def send_last_map_to_odom_transform(self):
         if not(hasattr(self, 'translation') and hasattr(self, 'rotation')):
             return
+        # print ("translation:",self.translation,"rotation:", self.rotation)
         self.tf_broadcaster.sendTransform(self.translation,
                                           self.rotation,
                                           rospy.get_rostime(),
