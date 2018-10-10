@@ -48,7 +48,7 @@ class SensorModel():
 
         # calculate error for each pose
         for i in range(0, len(w_poses.poses)):
-            errors[i] = (self.get_average_distance(w_poses.poses[i]))
+            errors[i] = (self.get_average_distance(w_poses.poses[i]))**2
 
         # normalize errors between 0 and 1, with large errors given low values
         max_error = max(errors)
