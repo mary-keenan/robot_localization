@@ -18,14 +18,17 @@ from occupancy_field import OccupancyField
 from robot_localizer.msg import WeightedPose, WeightedPoseArray
 from geometry_msgs.msg import Pose, PoseArray, Point, PointStamped, TransformStamped, Vector3
 from sensor_msgs.msg import LaserScan, PointCloud
-from std_msgs.msg import Header
+from std_msgs.msg import Header, ColorRGBA
+from visualization_msgs.msg import Marker, MarkerArray
 
 class SensorModel():
     # see @brief in .py script file header comment
 
-    def __init__(self, o_field, tf_helper):
+    def __init__(self, o_field, tf_helper, visualize=True):
 
         # Variables
+
+        self.visualize = visualize
         self.o_field = o_field
         self.tf_helper = tf_helper
         self.listener = tf.TransformListener()
@@ -33,6 +36,7 @@ class SensorModel():
         self.scan_pub = rp.Publisher('/visualize_scan', PointCloud, queue_size=1)
         self.pc_scan = None
         self.particle_tf_frame = TransformStamped(header=Header(frame_id='map', stamp=rp.Time(0)), child_frame_id='particle')
+        self.particle_weight_pub = rp.Publisher('particle_weight', MarkerArray, queue_size=10)
 
 
     def laser_cb(self, msg):
@@ -40,15 +44,23 @@ class SensorModel():
         self.pc_scan = msg
 
 
-    def populate_error_poses(self, w_poses):
+    def populate_error_poses(self, w_poses, visualize=True):
         # Updates weighted pose array based on average dist from pose scan data
         # to map
 
         errors = [None] * len(w_poses.poses)
+        markers = [None] * len(w_poses.poses)
 
         # calculate error for each pose
         for i in range(0, len(w_poses.poses)):
             errors[i] = (self.get_average_distance(w_poses.poses[i]))**2
+            if visualize:
+                markers[i] = Marker(header=Header(frame_id='map'),
+                                    id=i,
+                                    type=3,
+                                    pose=w_poses.poses[i].pose.pose,
+                                    color=ColorRGBA(1,0,0,1),
+                                    scale=Vector3(errors[i]/10,errors[i]/10,errors[i]))
 
         # normalize errors between 0 and 1, with large errors given low values
         max_error = max(errors)
@@ -62,6 +74,9 @@ class SensorModel():
         # Add normalized errors to poses as weights
         for i in range(0,len(w_poses.poses)):
             w_poses.poses[i].weight = errors[i]
+
+        if visualize:
+            self.particle_weight_pub.publish(MarkerArray(markers=markers))
 
         return w_poses
 
