@@ -203,6 +203,14 @@ Visualization Manager:
       Unreliable: false
       Use Timestamp: false
       Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /particle_weight
+      Name: MarkerArray
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -265,4 +273,4 @@ Window Geometry:
     collapsed: true
   Width: 1114
   X: 806
-  Y: 24
+  Y: 31
