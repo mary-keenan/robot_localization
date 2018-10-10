@@ -43,6 +43,9 @@ class ParticleFilter(object):
         self.particle_pub = rospy.Publisher("particlecloud",
                                             PoseArray,
                                             queue_size=10)
+        self.particle_bad_pub = rospy.Publisher("bad_particlecloud",
+                                                PoseArray,
+                                                queue_size=10)
         self.pose_estimate_pub = rospy.Publisher("poseestimate",
                                                  PoseStamped,
                                                  queue_size=10)
@@ -56,8 +59,8 @@ class ParticleFilter(object):
         self.sensor_model = SensorModel(self.occupancy_field, self.transform_helper)
 
         self.particles = WeightedPoseArray(header=Header())
-        self.particle_num = 50
-        self.particle_cull_fraction = 0.9   # Percentage of particles to keep
+        self.particle_num = 40
+        self.particle_cull_fraction = 0.25   # Percentage of particles to keep
         self.loopcounter = 0
 
 
@@ -66,6 +69,12 @@ class ParticleFilter(object):
             based on a pose estimate.  These pose estimates could be generated
             by another ROS Node or could come from the rviz GUI """
 
+        # Catch for incorrect frame
+        if msg.header.frame_id != 'map':
+            rospy.logerr("ERR: Fixed Frame not 'map'; please change, then re-send initial pose")
+            return
+
+        # Update map to match given pose
         try:
             rospy.loginfo("Got new initial pose, resetting particle filter")
             xy_theta = \
@@ -80,15 +89,17 @@ class ParticleFilter(object):
             rospy.logwarn("ERR: No static map provided")
             return
 
+        # Pause to allow ROS to catch up
         rospy.Rate(2).sleep()
-        # initialize your particle filter based on the xy_theta tuple
+
+        # initialize particle filter based on the xy_theta tuple
         particles = [None] * self.particle_num
 
         # creates initial random distribution of poses
         for particle in range(0,self.particle_num):
-            pose = PoseStamped(header=Header(frame_id='odom'))
-            pose.pose.position.x = np.random.normal(msg.pose.pose.position.x, 0.3)
-            pose.pose.position.y = np.random.normal(msg.pose.pose.position.y, 0.3)
+            pose = PoseStamped(header=Header(frame_id='map'))
+            pose.pose.position.x = np.random.normal(xy_theta[0], 0.3)
+            pose.pose.position.y = np.random.normal(xy_theta[1], 0.3)
             pose.pose.position.z = 0
             pose.pose.orientation = msg.pose.pose.orientation
             particles[particle] = WeightedPose(weight=1, pose=self.transform_listener.transformPose('map', pose))
@@ -153,12 +164,18 @@ class ParticleFilter(object):
         return pose
 
 
-    def generate_new_particles_2(self, old_particles, percentage_to_keep):
+    def generate_new_particles_2(self, old_particles, percentage_to_keep, visualization=True):
         # Return a new set of particles based on particle weights
 
         # Chose top percent of pose list as sorted by weight
         weights = [pose.weight for pose in old_particles.poses]
-        chosen_particles = [pose for _,pose in sorted(zip(weights, old_particles.poses))[0:int(percentage_to_keep*len(old_particles.poses))]]
+        sorted_particles = sorted(zip(weights, old_particles.poses))
+        chosen_particles = [pose for _,pose in sorted_particles[int((1-percentage_to_keep)*len(old_particles.poses)):-1]]
+
+        # Publish removed particles for visualization
+        if visualization:
+            bad_particles = [pose.pose.pose for _,pose in sorted_particles[0:int((1-percentage_to_keep)*len(old_particles.poses))]]
+            self.particle_bad_pub.publish(PoseArray(header=Header(frame_id='map'), poses=bad_particles))
 
         # Sample from chosen particles using normalized weights for probabilities
         chosen_weights = [pose.weight for pose in chosen_particles]
@@ -186,7 +203,7 @@ class ParticleFilter(object):
         self.sensor_model.populate_error_poses(self.particles)
 
         # Resample particles based on weights
-        self.particles = self.generate_new_particles_2(self.particles, 0.9)
+        self.particles = self.generate_new_particles_2(self.particles, self.particle_cull_fraction)
 
         # Propagate particles based on motor model
         self.propagate_particles(msg.x, msg.y, msg.theta)
