@@ -59,8 +59,9 @@ class ParticleFilter(object):
         self.sensor_model = SensorModel(self.occupancy_field, self.transform_helper)
 
         self.particles = WeightedPoseArray(header=Header())
-        self.particle_num = 40
+        self.particle_num = 30
         self.particle_cull_fraction = 0.25   # Percentage of particles to keep
+        self.particle_weight_threshold = 0.1 # Threshold for particles to keep
         self.loopcounter = 0
 
 
@@ -138,8 +139,6 @@ class ParticleFilter(object):
             rotation = quaternion_from_euler(0,0, theta_prev + theta)
             particle.pose = PoseStamped(header=Header(frame_id='map'), pose=self.transform_helper.convert_translation_rotation_to_pose(translation, rotation))
 
-        self.update_particle_display()
-
 
     def update_particle_filter_position(self):
         # Returns average of all particles in particle filter as pose
@@ -164,7 +163,7 @@ class ParticleFilter(object):
         return pose
 
 
-    def generate_new_particles_2(self, old_particles, percentage_to_keep, visualization=True):
+    def generate_new_particles_cull(self, old_particles, percentage_to_keep, visualization=True):
         # Return a new set of particles based on particle weights
 
         # Chose top percent of pose list as sorted by weight
@@ -186,30 +185,45 @@ class ParticleFilter(object):
         return WeightedPoseArray(header=Header(frame_id='map'), poses=new_particles)
 
 
-    def generate_new_particles_1(self, old_particles, percentage_to_keep):
+    def generate_new_particles_thresh(self, old_particles, threshold, visualization=True):
         # Return a new set of particles based on particle weights
 
-        weight_array = [pose.weight for pose in old_particles.poses]
-        particle_num_to_keep = int(len(old_particles.poses) * percentage_to_keep)
-        particle_choices = np.random.choice(old_particles.poses, particle_num_to_keep, p=weight_array)
-        print(WeightedPoseArray(Header(), particle_choices))
+        # Chose top percent of pose list as sorted by weight
+        chosen_particles = [pose for pose in old_particles.poses if pose.weight >= threshold]
+        chosen_weights = [pose.weight for pose in chosen_particles]
+
+        # Publish removed particles for visualization
+        if visualization:
+            bad_particles = [pose.pose.pose for pose in old_particles.poses if pose.weight < threshold]
+            self.particle_bad_pub.publish(PoseArray(header=Header(frame_id='map'), poses=bad_particles))
+
+        # Sample from chosen particles using normalized weights for probabilities
+        chosen_weights = [pose.weight for pose in chosen_particles]
+        normalized_weights = [float(i)/sum(chosen_weights) for i in chosen_weights]
+        print(len(chosen_particles))
+        weighted_particle_sample = np.random.choice(len(chosen_particles), len(old_particles.poses), normalized_weights)
+        new_particles = [deepcopy(chosen_particles[index]) for index in weighted_particle_sample]
+
+        return WeightedPoseArray(header=Header(frame_id='map'), poses=new_particles)
 
 
     def pf_loop(self, msg):
         # Callback for motor model, runs single iteration of particle filter loop
-        rospy.loginfo("Sensor loop " + str(self.loopcounter))
+        rospy.loginfo("Sensor loop " + str(self.loopcounter) + ":  " + str(len(self.particles.poses)) + " particles")
 
         # update weights based on sensor model
         self.sensor_model.populate_error_poses(self.particles)
 
         # Resample particles based on weights
-        self.particles = self.generate_new_particles_2(self.particles, self.particle_cull_fraction)
-
-        # Propagate particles based on motor model
-        self.propagate_particles(msg.x, msg.y, msg.theta)
+        self.particles = self.generate_new_particles_thresh(self.particles, self.particle_weight_threshold)
+        self.update_particle_display()
+        #self.particles = self.generate_new_particles_cull(self.particles, self.particle_cull_fraction)
 
         # Update particle filter best guess position
         self.update_particle_filter_position()
+
+        # Propagate particles based on motor model
+        self.propagate_particles(msg.x, msg.y, msg.theta)
 
         self.loopcounter += 1
 
