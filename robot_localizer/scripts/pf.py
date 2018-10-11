@@ -271,8 +271,7 @@ class SensorModel(object):
 		# use the helper object to find how far the new x, y positions are from an object
 		# if this particle's pose is correct, the distance should be 0
 		dist_from_obstacle = self.occupancy_field.get_closest_obstacle_distance(new_x, new_y)
-
-		
+		dist_error = dist_from_obstacle ** 3
 
 		# distances_to_check_for_obstacles = numpy.linspace(0, sensor_dist + 3, 10)
 		# for dist in distances_to_check_for_obstacles:
