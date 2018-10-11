@@ -21,6 +21,7 @@ class ParticleFilter(object):
 		# initialize topic listener, publisher, and other ROS-specific stuff
 		self.rate = rospy.Rate(2)
 		rospy.Subscriber("initialpose", PoseWithCovarianceStamped, self.update_initial_pose) # responds to selection of a new approximate robot location
+		rospy.Subscriber("odom", Odometry, self.update_position)
 		self.particle_publisher = rospy.Publisher("my_particlecloud", PoseArray, queue_size = 10) # for rviz
 		self.pose_array_msg = PoseArray()
 		self.pose_array_msg.header.frame_id = "map"
@@ -46,14 +47,16 @@ class ParticleFilter(object):
 		self.current_position = None
 
 
-	def subscribe_to_motor_model(self):
-		""" starts subcribing to processed position topic with a callback for saving the data"""
-		rospy.Subscriber("robot_position", Pose2D, self.update_position)
-
-
-	def update_position(self, position):
+	def update_position(self, odom):
 		""" stores the most recent processed position """
-		self.current_position = position
+		# converts pose (geometry_msgs.Pose) to (x,y,yaw) tuple
+		pose = odom.pose.pose
+		orientation_tuple = (pose.orientation.x,
+							 pose.orientation.y,
+							 pose.orientation.z,
+							 pose.orientation.w)
+		angles = euler_from_quaternion(orientation_tuple)
+		self.current_position = Pose2D(x = pose.position.x, y = pose.position.y, theta = angles[2])
 
 
 	def resample_by_weights(self):
@@ -62,11 +65,9 @@ class ParticleFilter(object):
 		# filter out Nones and sort weights by descending order
 		filtered_weighted_pose_array = []
 
-		print ("resampling")
 		for weighted_pose in self.weighted_pose_array:
 			if not math.isnan(weighted_pose.weight):
 				filtered_weighted_pose_array.append(weighted_pose)
-				print ("x",weighted_pose.pose.x, "y",weighted_pose.pose.y, "theta",math.degrees(weighted_pose.pose.theta), "weight",weighted_pose.weight)
 
 		# if all of the weights are NaN, then keep our last list
 		if len(filtered_weighted_pose_array) is 0:
@@ -89,7 +90,6 @@ class ParticleFilter(object):
 			num_particles_to_clone = int(round(particle.weight * self.num_particles))
 			particle_clone = WeightedPose(pose = particle.pose, weight = 1 / self.num_particles)
 			for n in range(num_particles_to_clone):
-				print ("keep x",particle.pose.x, "y",particle.pose.y, "theta",math.degrees(particle.pose.theta), "weight",particle.weight)
 				self.weighted_pose_array.append(particle_clone)
 
 
@@ -137,7 +137,6 @@ class ParticleFilter(object):
 			x_sum += pose.pose.x
 			y_sum += pose.pose.y
 			theta_sum += pose.pose.theta
-			print (pose.pose.theta)
 
 		x_avg = x_sum / self.num_particles
 		y_avg = y_sum / self.num_particles
@@ -153,8 +152,6 @@ class ParticleFilter(object):
 
 	def run(self):
 		""" runs particle filter """
-
-		self.subscribe_to_motor_model()
 
 		# wait for first position data
 		while (self.current_position is None or self.weighted_pose_array is None) and not rospy.is_shutdown():
@@ -268,13 +265,24 @@ class SensorModel(object):
 		# plot the location of the particle's sensor reading
 		point = Point(x = new_x, y = new_y)
 		quaternion = Quaternion(*quaternion_from_euler(0, 0, angle_in_radians))
-		pose = Pose(position = point, orientation = quaternion)
-		self.pose_array_msg.poses.append(pose)
-		
+		whole_pose = Pose(position = point, orientation = quaternion)
+		self.pose_array_msg.poses.append(whole_pose)
+
 		# use the helper object to find how far the new x, y positions are from an object
 		# if this particle's pose is correct, the distance should be 0
-		dist_error = self.occupancy_field.get_closest_obstacle_distance(new_x, new_y)
+		dist_from_obstacle = self.occupancy_field.get_closest_obstacle_distance(new_x, new_y)
 
+		
+
+		# distances_to_check_for_obstacles = numpy.linspace(0, sensor_dist + 3, 10)
+		# for dist in distances_to_check_for_obstacles:
+		# 	x = pose.x + math.cos(angle_in_radians) * dist
+		# 	y = pose.y + math.sin(angle_in_radians) * dist	
+		# 	intermediate_dist_error = self.occupancy_field.get_closest_obstacle_distance(x, y)
+		# 	if intermediate_dist_error < .05 and intermediate_dist_error < dist_error:
+		# 		dist_error = sensor_dist - dist
+
+		print (sensor_degree, ":", dist_error)
 		# plot distance error on top of the location of the particle's sensor reading
 		if dist_error is not None:
 			point = Point(x = new_x + math.cos(angle_in_radians) * dist_error, y = new_y + math.sin(angle_in_radians) * dist_error)
@@ -289,33 +297,16 @@ class MotorModel(object):
 
 	def __init__(self, standard_deviation_of_dist = .25, linear_threshold_for_change = .01, angular_threshold_for_change = 1, amplifier = 3):
 
-		# initialize topic listeners and publisher
-		rospy.Subscriber("odom", Odometry, self.publish_position)
-		self.position_publisher = rospy.Publisher("robot_position", Pose2D, queue_size = 10)
-
 		# initialize parameters
 		self.linear_threshold_for_change = linear_threshold_for_change
 		self.angular_threshold_for_change = angular_threshold_for_change
 		self.standard_deviation_of_dist = standard_deviation_of_dist # determines magnitude of noise
 		self.amplifier = amplifier # speed up movements
 
-	def publish_position(self, odom):
-		""" publishes 2D pose of current position """
-
-		# converts pose (geometry_msgs.Pose) to (x,y,yaw) tuple
-		pose = odom.pose.pose
-		orientation_tuple = (pose.orientation.x,
-							 pose.orientation.y,
-							 pose.orientation.z,
-							 pose.orientation.w)
-		angles = euler_from_quaternion(orientation_tuple)
-		current_pose = Pose2D(x = pose.position.x, y = pose.position.y, theta = angles[2])
-		self.position_publisher.publish(current_pose)
-
 
 	def calculate_movement(self, last_pose, current_pose):
-		""" calculates the change in location and angle between two poses and returns it if it's significant"""
-		
+		""" calculates the change in location and angle between two poses and returns it if it's significant"""		
+
 		# calculate linear and angular change from last position
 		linear_x_change = current_pose.x - last_pose.x
 		linear_y_change = current_pose.y - last_pose.y
