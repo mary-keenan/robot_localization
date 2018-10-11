@@ -271,17 +271,8 @@ class SensorModel(object):
 		# use the helper object to find how far the new x, y positions are from an object
 		# if this particle's pose is correct, the distance should be 0
 		dist_from_obstacle = self.occupancy_field.get_closest_obstacle_distance(new_x, new_y)
-		dist_error = dist_from_obstacle ** 3
+		dist_error = dist_from_obstacle ** 3 # this gives more weight to smaller distances
 
-		# distances_to_check_for_obstacles = numpy.linspace(0, sensor_dist + 3, 10)
-		# for dist in distances_to_check_for_obstacles:
-		# 	x = pose.x + math.cos(angle_in_radians) * dist
-		# 	y = pose.y + math.sin(angle_in_radians) * dist	
-		# 	intermediate_dist_error = self.occupancy_field.get_closest_obstacle_distance(x, y)
-		# 	if intermediate_dist_error < .05 and intermediate_dist_error < dist_error:
-		# 		dist_error = sensor_dist - dist
-
-		print (sensor_degree, ":", dist_error)
 		# plot distance error on top of the location of the particle's sensor reading
 		if dist_error is not None:
 			point = Point(x = new_x + math.cos(angle_in_radians) * dist_error, y = new_y + math.sin(angle_in_radians) * dist_error)
@@ -335,12 +326,12 @@ class MotorModel(object):
 	def add_noisy_movement_to_particle(self, pose, movement):
 		""" calculates linear and angular noise from distribution given some movement and returns pose updated with noisy movement """
 		center_of_dist = 0 # centered here because we want negative and positive values
-		position_normal_dist_samples  = numpy.random.normal(loc = center_of_dist, scale = self.standard_deviation_of_dist, size = 2)
-		theta_normal_dist_sample  = numpy.random.normal(loc = center_of_dist, scale = self.standard_deviation_of_dist, size = 1)
+		position_normal_dist_samples  = numpy.random.normal(loc = center_of_dist, scale = self.standard_deviation_of_dist * 2, size = 2)
+		theta_normal_dist_sample  = numpy.random.normal(loc = center_of_dist, scale = self.standard_deviation_of_dist * 6, size = 1)
 
 		# calculate noise that is proportional to the magnitude of the movement
 		magnitude_of_movement = math.sqrt(movement.x**2 + movement.y**2)
-		rotation = pose.theta + movement.theta * (1 + theta_normal_dist_sample[0]) * 2
+		rotation = pose.theta + movement.theta * (1 + theta_normal_dist_sample[0])
 		x_translation = pose.x + magnitude_of_movement * math.cos(pose.theta) * (1 + position_normal_dist_samples[0]) * self.amplifier
 		y_translation = pose.y + magnitude_of_movement * math.sin(pose.theta) * (1 + position_normal_dist_samples[1]) * self.amplifier
 
