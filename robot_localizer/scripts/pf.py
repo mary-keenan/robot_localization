@@ -105,11 +105,15 @@ class ParticleFilter(object):
 		# initialize your particle filter based on the xy_theta tuple
 		weight = 1.0 / self.num_particles # all points have the same weight to start
 		for i in range(self.num_particles):
-			particle_x = x#numpy.random.normal(loc = x, scale = self.standard_deviation_of_dist, size = 1) # low is inclusive, high is exclusive
-			particle_y = y#numpy.random.normal(loc = y, scale = self.standard_deviation_of_dist, size = 1)
-			particle_theta = theta#numpy.random.normal(loc = theta, scale = self.standard_deviation_of_dist, size = 1)
+			particle_x = x #numpy.random.normal(loc = x, scale = self.standard_deviation_of_dist, size = 1) # low is inclusive, high is exclusive
+			particle_y = y #numpy.random.normal(loc = y, scale = self.standard_deviation_of_dist, size = 1)
+			particle_theta = theta #numpy.random.normal(loc = theta, scale = self.standard_deviation_of_dist, size = 1)
 			point = WeightedPose(Pose2D(x = particle_x, y = particle_y, theta = particle_theta), weight)
 			self.weighted_pose_array.append(point)
+
+		# this makes it clear that the program recognized any updated 2D Pose Estimates in rviz
+		self.update_pose_array_msg()
+		self.particle_publisher.publish(self.pose_array_msg)
 
 
 	def update_pose_array_msg(self):
@@ -247,8 +251,8 @@ class SensorModel(object):
 			if distance > 0:
 				total_error += self.calculate_distance_error(pose, degree, distance)
 
-		self.particle_publisher.publish(self.pose_array_msg)
-		self.error_pub.publish(self.error_pose_array_msg)
+		# self.particle_publisher.publish(self.pose_array_msg)
+		# self.error_pub.publish(self.error_pose_array_msg)
 		
 		return total_error
 
@@ -263,10 +267,10 @@ class SensorModel(object):
 		new_y = pose.y + math.sin(angle_in_radians) * sensor_dist
 
 		# plot the location of the particle's sensor reading
-		point = Point(x = new_x, y = new_y)
-		quaternion = Quaternion(*quaternion_from_euler(0, 0, angle_in_radians))
-		whole_pose = Pose(position = point, orientation = quaternion)
-		self.pose_array_msg.poses.append(whole_pose)
+		# point = Point(x = new_x, y = new_y)
+		# quaternion = Quaternion(*quaternion_from_euler(0, 0, angle_in_radians))
+		# whole_pose = Pose(position = point, orientation = quaternion)
+		# self.pose_array_msg.poses.append(whole_pose)
 
 		# use the helper object to find how far the new x, y positions are from an object
 		# if this particle's pose is correct, the distance should be 0
@@ -274,11 +278,11 @@ class SensorModel(object):
 		dist_error = dist_from_obstacle ** 3 # this gives more weight to smaller distances
 
 		# plot distance error on top of the location of the particle's sensor reading
-		if dist_error is not None:
-			point = Point(x = new_x + math.cos(angle_in_radians) * dist_error, y = new_y + math.sin(angle_in_radians) * dist_error)
-			quaternion = Quaternion(*quaternion_from_euler(0, 0, angle_in_radians))
-			pose = Pose(position = point, orientation = quaternion)
-			self.error_pose_array_msg.poses.append(pose)
+		# if dist_error is not None:
+		# 	point = Point(x = new_x + math.cos(angle_in_radians) * dist_error, y = new_y + math.sin(angle_in_radians) * dist_error)
+		# 	quaternion = Quaternion(*quaternion_from_euler(0, 0, angle_in_radians))
+		# 	pose = Pose(position = point, orientation = quaternion)
+		# 	self.error_pose_array_msg.poses.append(pose)
 		
 		return dist_error
 
