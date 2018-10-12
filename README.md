@@ -45,7 +45,7 @@ WeightedPose is the structure for representing particles. In `pfilter_novak`, We
 
 The loop first checks how much the robot has moved since it last updated. If the robot has moved beyond a certain threshold, it proceeds to update the particle filter. Once the filter has confirmed that there has been significant movement, it uses the calculated movement values (x, y, θ) to update particle positions via a helper function in the MotorModel, which adds in noise values drawn randomly from a gaussian distribution and proportional to the magnitude of the movement. The particle weights are then calculated in the SensorModel using sensor data and the updated particle positions. The run loop concludes by resampling and averaging the particles to make a guess at the robot’s pose, then updating the relationship between the robot and the map based on that guess. 
  
- ![Figure 2](images/figure_2.png)
+ ![Figure 2](images/figure_2.png) <br/>
 **Figure 2:** Diagram depicting the base_link, odom, and map coordinate frames, along with their spatial relationships <br/>
 
 
