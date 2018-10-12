@@ -39,18 +39,21 @@ The fundamental structure of the two implementations is the same. The code is or
 
 WeightedPose is the structure for representing particles. In `pfilter_novak`, WeightedPose is a ROSmsg type consisting of a float weight and a StampedPose. In `mary_pf,`, WeightedPose is a simple object with two attributes, pose and weight, that is used to keep track of poses’ weights. The SensorModel and MotorModel run independently of the ParticleFilter as separate nodes; the ParticleFilter uses their various methods to read and filter data from the robot. Figure 1 represents a single iteration of a particle filter update.
 
-![Figure 1](images/figure_1.png)
-Figure 1: Flowchart depicting steps involved in a single particle filter run loop instance
+![Figure 1](images/figure_1.png) <br/>
+**Figure 1:** Flowchart depicting steps involved in a single particle filter run loop instance
+
 
 The loop first checks how much the robot has moved since it last updated. If the robot has moved beyond a certain threshold, it proceeds to update the particle filter. Once the filter has confirmed that there has been significant movement, it uses the calculated movement values (x, y, θ) to update particle positions via a helper function in the MotorModel, which adds in noise values drawn randomly from a gaussian distribution and proportional to the magnitude of the movement. The particle weights are then calculated in the SensorModel using sensor data and the updated particle positions. The run loop concludes by resampling and averaging the particles to make a guess at the robot’s pose, then updating the relationship between the robot and the map based on that guess. 
  
  ![Figure 2](images/figure_2.png)
-Figure 2: Diagram depicting the base_link, odom, and map coordinate frames, along with their spatial relationships
+**Figure 2:** Diagram depicting the base_link, odom, and map coordinate frames, along with their spatial relationships <br/>
+
 
 The filter uses three coordinate frames: map, odom, and base_link. As shown in Figure 2, the robot’s location data in the odom frame after it has been transformed from base_link. The ParticleFilter then uses its guess for the robot's pose within the map frame to update the transform from map to odom, as shown in Figure 3.
 
-![Figure 3](images/figure_3.png)
-Figure 3: Tf frame diagram depicting the relationship between the base_link, odom, and map coordinate frames and how each transform is updated.
+![Figure 3](images/figure_3.png) <br/>
+**Figure 3:** Tf frame diagram depicting the relationship between the base_link, odom, and map coordinate frames and how each transform is updated.
+
 
 # Design Decisions
 This section sheds further light on some design decisions that were made during the implementation of the particle filter. Each branch's solution to the problem is described in detail, as the two implementations do not necessarily use the same solution to each problem.
@@ -78,11 +81,13 @@ The chosen implementation of the particle filter has a number of steps that are 
 
 Figures 4 and 5 show the visualizations used to make sure the weighting was working correctly for `pf_mary`. The green arrows are the locations of the “obstacles” you would expect to see given the sensor data and this particular particle’s pose. The blue arrows represent the distance between that green arrow and the closest obstacle. For example, if the green arrows are located against a wall as they are in 5, the blue arrows will be right on top of them, but if the green arrows are in open space, as in 4, the blue arrows will be ahead of them. The distance from the blue to the green arrows represents how far the green arrow is from the closest obstacle. This visualization made clear the fact that null sensor data (value of 0.0) was not being filtered out correctly, which was heavily influencing the weighting.
 
-![Figure 4](images/figure_4.png)
-Figure 4: Screenshot of rviz showing output visualization of sensor data and respective weights for a bad pose.
+![Figure 4](images/figure_4.png) <br/>
+**Figure 4:** Screenshot of rviz showing output visualization of sensor data and respective weights for a bad pose.
 
-![Figure 5](images/figure_5.png)
-Figure 5: Screenshot of rviz showing output visualization of sensor data and respective weights for a good pose.
+
+![Figure 5](images/figure_5.png) <br/>
+**Figure 5:** Screenshot of rviz showing output visualization of sensor data and respective weights for a good pose.
+
 
 ## Debugging
 
